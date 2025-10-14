@@ -1,0 +1,62 @@
+// Requires package: dotnet add package Microsoft.PowerShell.SDK
+using System;
+using System.Collections.ObjectModel;
+using System.Management.Automation; // from Microsoft.PowerShell.SDK
+using System.Management.Automation.Runspaces;
+
+public record QuickAssistInfo(string? Name, string? PackageFullName, string? InstallLocation, string? Version);
+
+public static class QuickAssistCheckerPSHost
+{
+    /// <summary>
+    /// Uses the PowerShell SDK to run Get-AppxPackage in-process.
+    /// Returns null if not found or error.
+    /// </summary>
+    public static QuickAssistInfo? GetQuickAssistInfoInProcess()
+    {
+        try
+        {
+            // Create a default runspace and PowerShell instance
+            using var ps = PowerShell.Create();
+            ps.AddScript("Get-AppxPackage -Name '*QuickAssist*' | Select-Object -Property Name,PackageFullName,InstallLocation,Version");
+
+            // Invoke and get PSObjects
+            Collection<PSObject>? results = ps.Invoke();
+
+            if (ps.HadErrors || results == null || results.Count == 0)
+                return null;
+
+            // Take first result
+            var first = results[0];
+            var name = first.Members["Name"]?.Value?.ToString();
+            var packageFullName = first.Members["PackageFullName"]?.Value?.ToString();
+            var installLocation = first.Members["InstallLocation"]?.Value?.ToString();
+            string? version = null;
+
+            var versionObj = first.Members["Version"]?.Value;
+            if (versionObj != null)
+            {
+                // Version is often a PSCustomObject with Major/Minor/Build/Revision
+                var vprop = versionObj.GetType().GetProperty("Major");
+                if (vprop != null)
+                {
+                    var major = vprop.GetValue(versionObj)?.ToString();
+                    var minor = versionObj.GetType().GetProperty("Minor")?.GetValue(versionObj)?.ToString();
+                    var build = versionObj.GetType().GetProperty("Build")?.GetValue(versionObj)?.ToString();
+                    var rev = versionObj.GetType().GetProperty("Revision")?.GetValue(versionObj)?.ToString();
+                    version = $"{major}.{minor}.{build}.{rev}";
+                }
+                else
+                {
+                    version = versionObj.ToString();
+                }
+            }
+
+            return new QuickAssistInfo(name, packageFullName, installLocation, version);
+        }
+        catch
+        {
+            return null;
+        }
+    }
+}
