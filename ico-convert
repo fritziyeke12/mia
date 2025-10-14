@@ -1,0 +1,54 @@
+Add-Type -AssemblyName System.Drawing
+
+function Convert-ToIcon {
+    param(
+        [string]$InputPath,
+        [string]$OutputPath
+    )
+
+    # Load your PNG
+    $bitmap = [System.Drawing.Bitmap]::FromFile($InputPath)
+
+    # Ensure the bitmap supports alpha transparency
+    $bitmap.MakeTransparent()
+
+    # Create a memory stream for ICO output
+    $fs = New-Object System.IO.FileStream($OutputPath, [System.IO.FileMode]::Create)
+    $bw = New-Object System.IO.BinaryWriter($fs)
+
+    # ICO header
+    $bw.Write([UInt16]0)      # reserved
+    $bw.Write([UInt16]1)      # image type (1 = icon)
+    $bw.Write([UInt16]1)      # number of images
+
+    # Image entry (for one 256x256 image)
+    $bw.Write([Byte]0)        # width (0 = 256)
+    $bw.Write([Byte]0)        # height (0 = 256)
+    $bw.Write([Byte]0)        # colors
+    $bw.Write([Byte]0)        # reserved
+    $bw.Write([UInt16]1)      # color planes
+    $bw.Write([UInt16]32)     # bits per pixel (32-bit = transparency)
+    
+    # Save PNG to memory
+    $pngStream = New-Object System.IO.MemoryStream
+    $bitmap.Save($pngStream, [System.Drawing.Imaging.ImageFormat]::Png)
+    $pngBytes = $pngStream.ToArray()
+    $pngStream.Close()
+
+    $bw.Write([UInt32]$pngBytes.Length) # image size
+    $bw.Write([UInt32]22)               # offset (6+16 header bytes)
+
+    # Write PNG data
+    $bw.Write($pngBytes)
+    $bw.Flush()
+    $bw.Close()
+    $fs.Close()
+}
+
+# ---- USAGE ----
+$in = "C:\Logo\company_logo.png"
+$out = "C:\Logo\company_logo.ico"
+
+Convert-ToIcon -InputPath $in -OutputPath $out
+
+Write-Host "✅ ICO created at $out"
