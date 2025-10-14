@@ -1,0 +1,106 @@
+Add-Type -AssemblyName System.Drawing
+
+function New-ResizedBitmap {
+    param(
+        [System.Drawing.Image]$Image,
+        [int]$Size
+    )
+    # Center-fit into a square canvas (keeps aspect ratio, adds transparent padding)
+    $canvas = New-Object System.Drawing.Bitmap($Size, $Size, [System.Drawing.Imaging.PixelFormat]::Format32bppArgb)
+    $g = [System.Drawing.Graphics]::FromImage($canvas)
+    $g.CompositingQuality = 'HighQuality'
+    $g.InterpolationMode = 'HighQualityBicubic'
+    $g.SmoothingMode = 'HighQuality'
+    $g.PixelOffsetMode = 'HighQuality'
+    $g.Clear([System.Drawing.Color]::Transparent)
+
+    $scale = [Math]::Min($Size / $Image.Width, $Size / $Image.Height)
+    $drawW = [int]([Math]::Round($Image.Width * $scale))
+    $drawH = [int]([Math]::Round($Image.Height * $scale))
+    $x = [int](($Size - $drawW) / 2)
+    $y = [int](($Size - $drawH) / 2)
+
+    $destRect = New-Object System.Drawing.Rectangle($x, $y, $drawW, $drawH)
+    $g.DrawImage($Image, $destRect)
+    $g.Dispose()
+    return $canvas
+}
+
+function Convert-PngToIcoMulti {
+    param(
+        [Parameter(Mandatory=$true)][string]$InputPath,
+        [Parameter(Mandatory=$true)][string]$OutputPath,
+        [int[]]$Sizes = @(16,32,48,256)
+    )
+
+    if (!(Test-Path $InputPath)) { throw "Input file not found: $InputPath" }
+
+    $img = [System.Drawing.Image]::FromFile($InputPath)
+
+    # Build PNG chunks for each requested size
+    $entries = @()
+    $imageData = @()
+    foreach ($s in $Sizes) {
+        $bmp = New-ResizedBitmap -Image $img -Size $s
+        $ms = New-Object System.IO.MemoryStream
+        $bmp.Save($ms, [System.Drawing.Imaging.ImageFormat]::Png)
+        $bytes = $ms.ToArray()
+        $ms.Dispose()
+        $bmp.Dispose()
+
+        $entries += [PSCustomObject]@{
+            WidthByte  = ([byte]($(if ($s -ge 256) { 0 } else { $s })))
+            HeightByte = ([byte]($(if ($s -ge 256) { 0 } else { $s })))
+            Colors     = [byte]0
+            Reserved   = [byte]0
+            Planes     = [UInt16]1
+            BitCount   = [UInt16]32
+            Size       = [UInt32]$bytes.Length
+            Offset     = [UInt32]0  # fill later
+        }
+        $imageData += ,$bytes
+    }
+
+    # Calculate offsets (ICONDIR 6 bytes + ICONDIRENTRY 16 bytes each)
+    $offset = 6 + (16 * $entries.Count)
+    for ($i=0; $i -lt $entries.Count; $i++) {
+        $entries[$i].Offset = [UInt32]$offset
+        $offset += $entries[$i].Size
+    }
+
+    # Write ICO
+    $fs = New-Object System.IO.FileStream($OutputPath, [System.IO.FileMode]::Create)
+    $bw = New-Object System.IO.BinaryWriter($fs)
+
+    # ICONDIR
+    $bw.Write([UInt16]0)                   # reserved
+    $bw.Write([UInt16]1)                   # type: 1 = icon
+    $bw.Write([UInt16]$entries.Count)      # count
+
+    # ICONDIRENTRYs
+    foreach ($e in $entries) {
+        $bw.Write([byte]$e.WidthByte)      # width (0 means 256)
+        $bw.Write([byte]$e.HeightByte)     # height (0 means 256)
+        $bw.Write([byte]$e.Colors)         # palette size
+        $bw.Write([byte]$e.Reserved)       # reserved
+        $bw.Write([UInt16]$e.Planes)       # color planes
+        $bw.Write([UInt16]$e.BitCount)     # bpp
+        $bw.Write([UInt32]$e.Size)         # image size
+        $bw.Write([UInt32]$e.Offset)       # offset to image
+    }
+
+    # PNG image data blocks
+    for ($i=0; $i -lt $imageData.Count; $i++) {
+        $bw.Write($imageData[$i])
+    }
+
+    $bw.Flush(); $bw.Close(); $fs.Close()
+    $img.Dispose()
+}
+
+# -------- USAGE --------
+$in  = "C:\Logo\company_logo.png"   # transparent PNG input
+$out = "C:\Logo\company_logo.ico"   # multi-size transparent ICO output
+
+Convert-PngToIcoMulti -InputPath $in -OutputPath $out -Sizes @(16,32,48,256)
+Write-Host "✅ Created $out with sizes 16/32/48/256 @ 32-bit + transparency."
